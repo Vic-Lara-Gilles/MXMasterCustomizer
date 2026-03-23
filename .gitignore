@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+*.dSYM/
+
+# Swift build artifacts
+.build/
+*.o
+*.d
+
+# Compiled binary (run compilar.sh to rebuild)
+MXCustomizer
