@@ -1,57 +1,99 @@
 import Foundation
 import IOKit.hid
 import CoreGraphics
+import AppKit
 
-class MouseController {
+class MouseController: NSObject {
     private var manager: IOHIDManager
     private var lastButtonState: UInt8 = 0
-    
-    // Variable para saber si el boton derecho esta siendo mantenido
     var isCommandHeld = false
     var eventTap: CFMachPort?
 
-    init() {
+    let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+    override init() {
         manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-        
+        super.init()
+
         let criterion: [String: Any] = [
             kIOHIDVendorIDKey: 0x046D,
             kIOHIDProductIDKey: 0xB023
         ]
         IOHIDManagerSetDeviceMatching(manager, criterion as CFDictionary)
+        setupMenuBar()
+    }
+
+    func setupMenuBar() {
+        if let button = statusItem.button {
+            button.title = "MX"
+        }
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "MX Customizer Activo", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Salir", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        statusItem.menu = menu
+    }
+
+    func solicitarPermisos() -> Bool {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
+        let trusted = AXIsProcessTrustedWithOptions(options)
+
+        if !trusted {
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "Permisos Requeridos"
+                alert.informativeText = "MX Customizer necesita permisos de Accesibilidad para que el botón Command funcione.\n\nHaz clic en 'Abrir Ajustes', activa el interruptor de la app y vuelve a abrir MX Customizer."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Abrir Ajustes y Salir")
+                alert.addButton(withTitle: "Solo Salir")
+
+                let respuesta = alert.runModal()
+
+                if respuesta == .alertFirstButtonReturn {
+                    // Este enlace abre directamente el panel de Accesibilidad en macOS
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                // Cerramos la app para que el usuario la reinicie tras dar permisos
+                NSApplication.shared.terminate(nil)
+            }
+            return false
+        }
+        return true
     }
 
     func start() {
-        // Iniciamos el interceptor de teclado y clics
+        // Si no hay permisos, la app lanza la alerta, abre ajustes y detiene la ejecución
+        if !solicitarPermisos() {
+            return
+        }
+
         configurarInterceptorTeclado()
-        
+
         let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        
+
         let callback: IOHIDReportCallback = { (context, result, sender, type, reportId, report, reportLength) in
             let controller = Unmanaged<MouseController>.fromOpaque(context!).takeUnretainedValue()
             let buffer = UnsafeBufferPointer(start: report, count: reportLength)
-            
+
             if reportId == 2 && buffer.count >= 2 {
                 let buttonState = buffer[1]
-                
+
                 if buttonState != controller.lastButtonState {
-                    
-                    // Al soltar el boton, desactivamos el estado Command
+                    // Soltar boton derecho
                     if controller.lastButtonState == 0x10 && buttonState == 0x00 {
-                        print("Soltando boton: Command desactivado")
                         controller.isCommandHeld = false
                     }
-                    
-                    // Boton Izquierdo (0x08) -> Abre la App
+
+                    // Boton Izquierdo (0x08)
                     if buttonState == 0x08 {
-                        print("Accion: Abriendo ClipBoardApp")
                         controller.abrirApp(ruta: "/Applications/ClipBoardApp.app")
-                        
-                    // Boton Derecho (0x10) -> Activa estado Command
+                    // Boton Derecho (0x10)
                     } else if buttonState == 0x10 {
-                        print("Boton presionado: Command activado")
                         controller.isCommandHeld = true
                     }
-                    
+
                     controller.lastButtonState = buttonState
                 }
             }
@@ -59,27 +101,20 @@ class MouseController {
 
         IOHIDManagerRegisterInputReportCallback(manager, callback, context)
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
-        
-        let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-        
-        if openResult == kIOReturnSuccess {
-            print("Programa iniciado. Izquierdo: Abre App. Derecho: Actua como Command.")
-        } else {
-            print("Error al abrir el dispositivo.")
-        }
+        IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
     }
-    
-    // Intercepta los eventos del sistema
+
+
+
     func configurarInterceptorTeclado() {
-        // Escuchamos teclas y clics del mouse
         let eventMask = (1 << CGEventType.keyDown.rawValue) |
                         (1 << CGEventType.keyUp.rawValue) |
                         (1 << CGEventType.leftMouseDown.rawValue) |
                         (1 << CGEventType.leftMouseUp.rawValue) |
                         (1 << CGEventType.scrollWheel.rawValue)
-        
+
         let info = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        
+
         eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -88,12 +123,11 @@ class MouseController {
             callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
                 guard let refcon = refcon else { return Unmanaged.passRetained(event) }
                 let controller = Unmanaged<MouseController>.fromOpaque(refcon).takeUnretainedValue()
-                
-                // Si el boton del mouse esta presionado, agregamos Command a la accion
+
                 if controller.isCommandHeld {
                     event.flags.insert(.maskCommand)
                 }
-                
+
                 return Unmanaged.passRetained(event)
             },
             userInfo: info
@@ -104,7 +138,8 @@ class MouseController {
             CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
         } else {
-            print("Advertencia: No se pudo crear el EventTap. Revisa los permisos de Accesibilidad.")
+            // Si macOS lo bloquea, ahora lo veremos en pantalla
+            mostrarAlerta(mensaje: "macOS bloqueo el interceptor del raton. Elimina la app de Accesibilidad y vuelvela a agregar.")
         }
     }
 
@@ -112,16 +147,22 @@ class MouseController {
         let task = Process()
         task.launchPath = "/usr/bin/open"
         task.arguments = [ruta]
-        
-        do {
-            try task.run()
-        } catch {
-            print("Error al intentar abrir la app: \(error)")
+        try? task.run()
+    }
+
+    func mostrarAlerta(mensaje: String) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "MX Customizer"
+            alert.informativeText = mensaje
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Entendido")
+            alert.runModal()
         }
     }
 }
 
+let app = NSApplication.shared
 let controller = MouseController()
 controller.start()
-
-RunLoop.main.run()
+app.run()
